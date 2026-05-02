@@ -762,7 +762,7 @@ with tab_analyze:
         # ★ Clearly visible hint (uses .panel-hint class with proper colour)
         st.markdown("""
         <div class="panel-hint">
-            ✅ &nbsp;YouTube · Direct MP4 · Google Drive · Dropbox · Vimeo<br>
+            ✅ &nbsp;YouTube · Instagram · X · Direct MP4 · Google Drive · Dropbox · Vimeo<br>
             <span style="font-size:0.65rem;opacity:0.75;">
                 YouTube uses automatic Piped / Invidious proxy bypass
             </span>
