@@ -1,7 +1,7 @@
 streamlit
 tensorflow==2.10
+numpy==1.23.5
 opencv-python-headless
-numpy
 pandas
 requests
 yt-dlp
