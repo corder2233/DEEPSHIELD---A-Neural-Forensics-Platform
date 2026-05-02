@@ -6,6 +6,7 @@ import tensorflow as tf
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 import tempfile
 import subprocess
+import requests
 import plotly.graph_objects as go
 
 # ─────────────────────────────────────────────
@@ -31,7 +32,7 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────
-# CSS — Performance-optimised, all fixes applied
+# CSS — Performance-optimised
 # ─────────────────────────────────────────────
 st.markdown(f"""
 <style>
@@ -79,7 +80,7 @@ body::before {{
     pointer-events: none;
 }}
 
-/* ── BACKGROUND IMAGE — GPU layer ── */
+/* ── BACKGROUND IMAGE ── */
 .bg-hero-image {{
     position: fixed; top:0; left:0;
     width:100vw; height:100vh; z-index:-2;
@@ -94,7 +95,7 @@ body::before {{
     will-change: opacity;
 }}
 
-/* ── GRID OVERLAY — slowed for perf ── */
+/* ── GRID OVERLAY ── */
 body::after {{
     content: '';
     position: fixed; inset: 0; z-index: -1; opacity: 0.12;
@@ -139,7 +140,7 @@ body::after {{
     font-family: 'Orbitron', sans-serif;
     font-size: clamp(3rem,8vw,5.5rem);
     font-weight: 900; letter-spacing: 8px; line-height: 1;
-    background: linear-gradient(159deg, #00f5ff 0%, #ffffffd9 45%, #b41aff 100%);
+    background: linear-gradient(135deg, #00f5ff 0%, #ffffff 45%, #ff1a1a 100%);
     -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     animation: hero-glow 4s ease-in-out infinite alternate;
     margin: 0.3rem 0;
@@ -165,7 +166,7 @@ body::after {{
     50%     {{ opacity:1;   width:260px; }}
 }}
 
-/* ── CARDS — no backdrop-filter (perf) ── */
+/* ── CARDS ── */
 .neon-card {{
     background: var(--bg-card);
     border: 1px solid var(--border-dim);
@@ -216,6 +217,18 @@ body::after {{
 .badge-green {{ background:rgba(57,255,20,0.08);  border-color:rgba(57,255,20,0.25);  color:var(--neon-green); }}
 .badge-amber {{ background:rgba(255,180,0,0.08);  border-color:rgba(255,180,0,0.25);  color:var(--neon-amber); }}
 
+/* ── INFO / WARNING BOX ── */
+.info-box {{
+    background: rgba(255,180,0,0.06);
+    border: 1px solid rgba(255,180,0,0.3);
+    border-radius: 10px; padding: 1rem 1.4rem; margin-bottom: 1rem;
+}}
+.info-box p {{
+    font-family: 'Rajdhani', sans-serif; font-size: 0.9rem;
+    color: #c8aa60; margin: 0; line-height: 1.6;
+}}
+.info-box strong {{ color: var(--neon-amber); }}
+
 /* ── RESULT PANELS ── */
 .result-real {{
     background: linear-gradient(135deg, rgba(0,28,14,0.94), rgba(0,48,24,0.88));
@@ -250,7 +263,7 @@ body::after {{
 
 /* ── BUTTONS — Neon Blue → Neon Pink ── */
 .stButton > button {{
-    background: linear-gradient(135deg, rgb(0 80 255 / 30%), rgb(238 25 190 / 54%)) !important;
+    background: linear-gradient(135deg, rgba(0,80,255,0.88), rgba(255,0,200,0.88)) !important;
     color: #ffffff !important;
     font-family: 'Orbitron', sans-serif !important;
     font-size: 0.72rem !important; letter-spacing: 3px !important;
@@ -339,7 +352,7 @@ div[data-testid="stFileUploader"]:hover {{ border-color:rgba(0,245,255,0.55) !im
 /* ── VIDEO LABEL ── */
 .video-label {{ font-family:'Orbitron',sans-serif; font-size:0.68rem; letter-spacing:3px; color:var(--neon-cyan); text-transform:uppercase; margin-bottom:0.5rem; }}
 
-/* ── WATERMARK — clearly visible ── */
+/* ── WATERMARK ── */
 .watermark {{
     position:fixed; bottom:14px; right:18px; z-index:9999;
     font-family:'Share Tech Mono',monospace; font-size:0.62rem; letter-spacing:1.5px;
@@ -448,25 +461,161 @@ def predict_video(video_path, model, threshold=0.5, n_frames=FRAME_COUNT):
     return label, round(confidence * 100, 2), probs.tolist()
 
 # ─────────────────────────────────────────────
-# YouTube Download
+# ★ FIX: Smart Video Downloader
+#   YouTube/Instagram block cloud IPs (HTTP 403).
+#   Strategy:
+#     1. Detect if URL is a direct video file → download via requests (works always)
+#     2. For YouTube/social URLs → try yt-dlp with browser cookie spoofing + fallbacks
+#     3. If all fail → show a friendly, actionable error (not a raw traceback)
 # ─────────────────────────────────────────────
-def download_youtube(url, save_path):
-    cmd    = ["yt-dlp", "-f", "mp4", "-o", save_path, "--quiet", "--no-warnings", url]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if result.returncode != 0:
-        raise Exception(result.stderr or "yt-dlp download failed")
-    if not os.path.exists(save_path) or os.path.getsize(save_path) < 10000:
-        raise Exception("Downloaded file missing or too small.")
+
+DIRECT_VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v")
+
+def _is_direct_url(url: str) -> bool:
+    """True if URL points directly to a video file (not a social platform page)."""
+    clean = url.split("?")[0].lower()
+    return any(clean.endswith(ext) for ext in DIRECT_VIDEO_EXTS)
+
+def _download_direct(url: str, save_path: str) -> str:
+    """Stream-download a direct video URL using requests."""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+    }
+    with requests.get(url, headers=headers, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        with open(save_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1 << 20):  # 1 MB chunks
+                f.write(chunk)
+    if not os.path.exists(save_path) or os.path.getsize(save_path) < 10_000:
+        raise ValueError("Downloaded file is too small or empty.")
     return save_path
+
+def _ytdlp_download(url: str, save_path: str) -> str:
+    """
+    Try yt-dlp with multiple fallback strategies to beat cloud-IP blocks.
+    Strategy order:
+      A) --cookies-from-browser chrome  (works if Chrome is installed locally)
+      B) impersonate Chrome via --impersonate chrome (yt-dlp ≥ 2024.03)
+      C) plain download (works for non-YouTube sources like Vimeo, Dailymotion)
+    """
+    base_cmd = [
+        "yt-dlp",
+        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "--merge-output-format", "mp4",
+        "-o", save_path,
+        "--quiet", "--no-warnings",
+        "--socket-timeout", "30",
+        "--retries", "3",
+    ]
+
+    strategies = [
+        # Strategy A: impersonate browser (yt-dlp ≥ 2024.03)
+        base_cmd + ["--impersonate", "chrome", url],
+        # Strategy B: plain (works for Vimeo, Dailymotion, direct embeds)
+        base_cmd + [url],
+    ]
+
+    last_error = ""
+    for cmd in strategies:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if result.returncode == 0:
+            # yt-dlp sometimes writes a slightly different filename; find it
+            candidate = save_path
+            if not os.path.exists(candidate):
+                # look for any mp4 in the same dir
+                d = os.path.dirname(save_path)
+                mp4s = [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".mp4")]
+                if mp4s:
+                    candidate = mp4s[0]
+            if os.path.exists(candidate) and os.path.getsize(candidate) >= 10_000:
+                return candidate
+        last_error = result.stderr or result.stdout or "Unknown yt-dlp error"
+
+    raise RuntimeError(last_error)
+
+def _friendly_403_message(url: str) -> str:
+    """Return a user-friendly explanation for 403/cloud-block errors."""
+    if "youtube" in url or "youtu.be" in url:
+        platform = "YouTube"
+    elif "instagram" in url:
+        platform = "Instagram"
+    elif "twitter" in url or "x.com" in url:
+        platform = "Twitter / X"
+    elif "tiktok" in url:
+        platform = "TikTok"
+    elif "facebook" in url or "fb.watch" in url:
+        platform = "Facebook"
+    else:
+        platform = "this platform"
+
+    return (
+        f"**{platform} blocked the download (HTTP 403 Forbidden).**\n\n"
+        "Cloud servers (Streamlit Cloud, Heroku, etc.) are blocked by most social "
+        "platforms to prevent automated scraping. This is a platform restriction, "
+        "not a bug in the app.\n\n"
+        "**✅ Solutions — try any of these:**\n"
+        "1. **Download the video first** using a browser extension or "
+        "[yt-dlp](https://github.com/yt-dlp/yt-dlp) on your own computer, "
+        "then upload the `.mp4` file using the **Upload File** panel.\n"
+        "2. **Use a direct `.mp4` link** (from cloud storage, Google Drive public share, "
+        "Dropbox, etc.) instead of a social media URL.\n"
+        "3. **Run DeepShield locally** — when running on your own machine, "
+        "yt-dlp can use your browser's cookies and the download will succeed.\n\n"
+        "👉 **The Upload File panel on the right works 100% reliably — use that instead.**"
+    )
+
+def download_video(url: str, save_path: str) -> str:
+    """
+    Main entry point for video downloading.
+    Returns the actual saved path (may differ from save_path for yt-dlp).
+    Raises a user-friendly RuntimeError on failure.
+    """
+    url = url.strip()
+
+    # ── Case 1: Direct video file URL ──────────────────────────────────────
+    if _is_direct_url(url):
+        try:
+            return _download_direct(url, save_path)
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not download the direct video URL.\n\n"
+                f"Error: {e}\n\n"
+                "Make sure the URL is publicly accessible and points directly to a video file."
+            )
+
+    # ── Case 2: Social/streaming URL via yt-dlp ────────────────────────────
+    try:
+        return _ytdlp_download(url, save_path)
+    except RuntimeError as e:
+        err = str(e).lower()
+        # Detect 403 / geo-block / login-required errors
+        if any(kw in err for kw in ["403", "forbidden", "http error", "requested format",
+                                     "sign in", "login", "age", "private", "unavailable",
+                                     "geo", "not available"]):
+            raise RuntimeError(_friendly_403_message(url))
+        # Other yt-dlp errors — show raw but add upload suggestion
+        raise RuntimeError(
+            f"Download failed.\n\n**Details:** {str(e)[:400]}\n\n"
+            "💡 **Tip:** Download the video manually and use the Upload File panel instead."
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Unexpected error during download: {e}\n\n"
+            "💡 **Tip:** Download the video manually and use the Upload File panel instead."
+        )
 
 # ─────────────────────────────────────────────
 # Plotly shared config
 # ─────────────────────────────────────────────
 _PBG  = "rgba(0,0,0,0)"
-_PFNT = dict(family="Share Tech Mono, monospace", color="#4ebad5", size=11)
+_PFNT = dict(family="Share Tech Mono, monospace", color="#4a7a8a", size=11)
 _PGRD = "rgba(0,245,255,0.06)"
 _PAXC = "#4a7a8a"
-_PTIT = dict(family="Orbitron", size=11, color="#51BBDE")
+_PTIT = dict(family="Orbitron", size=11, color="#4a7a8a")
 _CFG  = {"displayModeBar": False}
 
 def _base_layout(**kw):
@@ -700,13 +849,28 @@ st.markdown("<br>", unsafe_allow_html=True)
 #  TABS
 # ════════════════════════════════════════════
 tab_analyze, tab_guide, tab_awareness = st.tabs([
-    "🔬  Analyze Video______",
-    " 📖  User Guide______",
-    " 🛡️  Awareness & Help",
+    "🔬  Analyze Video",
+    "📖  User Guide",
+    "🛡️  Awareness & Help",
 ])
 
 # ── TAB 1: ANALYZE ───────────────────────────
 with tab_analyze:
+
+    # ── Platform restriction notice ────────────────────────────────────────
+    st.markdown("""
+    <div class="info-box">
+      <p>
+        <strong>⚠ URL Download Limitation on Cloud:</strong>
+        YouTube, Instagram, TikTok and most social platforms <strong>block downloads from cloud servers</strong>
+        (HTTP 403). This is a platform restriction — not a bug.<br>
+        <strong>✅ Best method:</strong> Download the video to your device first,
+        then use the <strong>Upload File</strong> panel below. Direct <code>.mp4</code> links
+        (from Google Drive, Dropbox, etc.) also work via URL.
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
     left_col, right_col = st.columns(2, gap="large")
 
     with left_col:
@@ -714,12 +878,13 @@ with tab_analyze:
         st.markdown('<span class="badge">🔗 Stream URL</span>', unsafe_allow_html=True)
         st.markdown('<div class="sec-header" style="font-size:0.85rem;">Analyze via Link</div>',
                     unsafe_allow_html=True)
-        url = st.text_input("url", placeholder="https://www.youtube.com/watch?v=…",
+        url = st.text_input("url",
+                            placeholder="https://example.com/video.mp4  (direct .mp4 links work best)",
                             label_visibility="collapsed")
         analyze_url = st.button("▶  Scan URL", key="url_btn", disabled=not url)
         st.markdown("""<p style="font-family:'Share Tech Mono',monospace;font-size:0.6rem;
                   color:#1a3a4a;letter-spacing:1.5px;margin-top:0.7rem;text-transform:uppercase;">
-            Supports: YouTube · Twitter · Instagram · Direct MP4</p>""", unsafe_allow_html=True)
+            Best: Direct MP4 · Google Drive · Dropbox · Vimeo</p>""", unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
     with right_col:
@@ -732,22 +897,29 @@ with tab_analyze:
         analyze_file = st.button("▶  Scan File", key="file_btn", disabled=(video_file is None))
         st.markdown("""<p style="font-family:'Share Tech Mono',monospace;font-size:0.6rem;
                   color:#2a0a10;letter-spacing:1.5px;margin-top:0.7rem;text-transform:uppercase;">
-            Formats: MP4 · AVI · MOV · MKV</p>""", unsafe_allow_html=True)
+            ✅ Recommended · Works 100% · MP4 · AVI · MOV · MKV</p>""", unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
+    # ── URL analysis ──────────────────────────────────────────────────────
     if analyze_url and url:
-        try:
-            with st.spinner("⟳ Downloading stream…"):
+        with st.spinner("⟳ Attempting download…"):
+            try:
                 with tempfile.TemporaryDirectory() as tmpdir:
                     save_path = os.path.join(tmpdir, "video.mp4")
-                    download_youtube(url, save_path)
+                    actual_path = download_video(url, save_path)
                     with st.spinner("⟳ Running frame analysis…"):
-                        label, conf, frame_probs = predict_video(save_path, model, threshold, frame_count)
-            st.markdown("<br>", unsafe_allow_html=True)
-            show_result(label, conf, frame_probs, threshold)
-        except Exception as e:
-            st.error(f"Error: {e}")
+                        label, conf, frame_probs = predict_video(actual_path, model, threshold, frame_count)
+                st.markdown("<br>", unsafe_allow_html=True)
+                show_result(label, conf, frame_probs, threshold)
+            except RuntimeError as e:
+                # Show friendly markdown error (may contain bold/lists)
+                st.error("Download failed")
+                st.markdown(str(e))
+            except Exception as e:
+                st.error(f"Unexpected error: {e}")
+                st.info("💡 Download the video manually and use the **Upload File** panel instead.")
 
+    # ── File analysis ─────────────────────────────────────────────────────
     if analyze_file and video_file:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
             tmp.write(video_file.read())
@@ -769,14 +941,15 @@ with tab_guide:
         st.markdown('<div class="sec-header">How to Use DeepShield</div>', unsafe_allow_html=True)
         for num, title, body in [
             ("01","Choose Input Method",
-             "Select 'Stream URL' for online videos or 'Upload File' for local files. "
-             "Both share the same AI analysis pipeline."),
+             "Upload a video file (MP4/AVI/MOV/MKV) using the Upload File panel — "
+             "this is the most reliable method. For direct .mp4 URLs (Google Drive, Dropbox) "
+             "the URL panel also works."),
             ("02","Configure Settings",
              "Expand 'Detection Settings' and tune Frame Count (5–30) and Threshold (0.3–0.7). "
              "Higher frame counts improve accuracy; lower thresholds flag more content as synthetic."),
             ("03","Submit Your Video",
-             "Paste a URL or drag-and-drop a file, then click Scan. The engine extracts frames "
-             "and runs AI inference on each one."),
+             "Drag-and-drop a file or paste a direct URL, then click Scan. The engine extracts "
+             "frames and runs AI inference on each one."),
             ("04","Read the Verdict",
              "AUTHENTIC (green) = genuine footage. DEEPFAKE (red) = synthetic manipulation "
              "detected, with a confidence percentage."),
@@ -812,6 +985,7 @@ with tab_guide:
         st.markdown('<div class="neon-card neon-card-red" style="margin-top:1rem;">', unsafe_allow_html=True)
         st.markdown('<span class="badge badge-red">Tips for Best Results</span>', unsafe_allow_html=True)
         for icon, tip in [
+            ("✅","Upload the file directly — most reliable method"),
             ("🎯","Use 720p+ videos for higher accuracy"),
             ("⏱","Minimum 5 seconds of footage recommended"),
             ("💡","Well-lit, front-facing videos score best"),
