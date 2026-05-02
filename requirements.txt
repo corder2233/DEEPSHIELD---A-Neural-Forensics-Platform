@@ -1,8 +1,10 @@
-streamlit
-tensorflow==2.10
+streamlit==1.25.0
+tensorflow==2.10.0
 numpy==1.23.5
-opencv-python-headless
-pandas
+protobuf==3.19.6
+grpcio==1.48.2
+opencv-python-headless==4.8.1.78
+pandas==1.5.3
 requests
 yt-dlp
 gdown
