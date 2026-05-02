@@ -6,7 +6,4 @@ pandas
 requests
 yt-dlp
 gdown
-
-
-
-
+plotly
