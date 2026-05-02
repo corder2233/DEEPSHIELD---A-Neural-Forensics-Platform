@@ -1,6 +1,8 @@
-streamlit>=1.32.0
-tensorflow>=2.15.0
-opencv-python-headless>=4.9.0
-numpy>=1.24.0
-pandas>=2.0.0
-yt-dlp>=2024.1.1
+streamlit
+tensorflow==2.10
+opencv-python-headless
+numpy
+pandas
+requests
+yt-dlp
+gdown
